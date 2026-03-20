@@ -10,3 +10,4 @@ data/seed_events.jsonl
 *.egg-info/
 dist/
 .DS_Store
+.venv/
