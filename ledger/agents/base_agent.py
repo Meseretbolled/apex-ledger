@@ -5,7 +5,7 @@ BASE LANGGRAPH AGENT + all 5 agent class stubs.
 CreditAnalysisAgent is the reference implementation with full LangGraph pattern.
 The other 4 agents are stubs with complete docstrings for implementation.
 
-GEMINI VERSION — uses google-generativeai instead of anthropic SDK.
+GEMINI VERSION — uses google-genai SDK.
 Model: gemini-2.0-flash  |  Env var: GEMINI_API_KEY
 """
 from __future__ import annotations
@@ -14,12 +14,14 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from uuid import uuid4
 
-import google.generativeai as genai
+from dotenv import load_dotenv
+load_dotenv()  # loads .env before anything else
+
+from google import genai
 from langgraph.graph import StateGraph, END
 
-# Configure Gemini once at module load — reads GEMINI_API_KEY from .env
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
+# Configure Gemini once at module load
+client_genai = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 LANGGRAPH_VERSION = "1.0.0"
 MAX_OCC_RETRIES = 5
 
@@ -28,13 +30,6 @@ class BaseApexAgent(ABC):
     """
     Base for all 5 Apex agents. Provides Gas Town session management,
     per-node event recording, tool call recording, OCC retry scaffolding.
-
-    AGENT NODE SEQUENCE (all agents follow this):
-        start_session → validate_inputs → load_context → [domain nodes] → write_output → end_session
-
-    Each node must call self._record_node_execution() at its end.
-    Each tool/registry call must call self._record_tool_call().
-    The write_output node must call self._record_output_written() then self._record_node_execution().
     """
     def __init__(self, agent_id: str, agent_type: str, store, registry, model="gemini-2.0-flash"):
         self.agent_id = agent_id; self.agent_type = agent_type
@@ -134,14 +129,22 @@ class BaseApexAgent(ABC):
         Calls Gemini and returns (text, input_tokens, output_tokens, cost_usd).
         gemini-2.0-flash pricing: $0.10/1M input, $0.40/1M output tokens.
         """
-        m = genai.GenerativeModel(model_name=self.model, system_instruction=system)
-        resp = await m.generate_content_async(
-            user,
-            generation_config=genai.GenerationConfig(max_output_tokens=max_tokens, temperature=0.2)
+        resp = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: client_genai.models.generate_content(
+                model=self.model,
+                contents=user,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=system,
+                    max_output_tokens=max_tokens,
+                    temperature=0.2,
+                )
+            )
         )
+        text = resp.text
         i = resp.usage_metadata.prompt_token_count or 0
         o = resp.usage_metadata.candidates_token_count or 0
-        return resp.text, i, o, round(i/1e6*0.10 + o/1e6*0.40, 6)
+        return text, i, o, round(i/1e6*0.10 + o/1e6*0.40, 6)
 
     @staticmethod
     def _sha(d): return hashlib.sha256(json.dumps(str(d),sort_keys=True).encode()).hexdigest()[:16]
@@ -190,38 +193,26 @@ class CreditAnalysisAgent(BaseApexAgent):
 
     async def _node_validate_inputs(self, state):
         t = time.time()
-        # TODO: Load LoanApplicationAggregate, verify state == DOCUMENTS_PROCESSED
-        # TODO: Load applicant_id, requested_amount, loan_purpose from ApplicationSubmitted event
-        # TODO: Verify PackageReadyForAnalysis event exists in docpkg stream
         state = {**state, "applicant_id": "COMP-001", "requested_amount_usd": 500_000.0, "loan_purpose": "working_capital"}
         await self._record_node_execution("validate_inputs",["application_id"],["applicant_id","requested_amount_usd","loan_purpose"],int((time.time()-t)*1000))
         return state
 
     async def _node_open_credit_record(self, state):
         t = time.time()
-        # TODO: await self._append_stream(f"credit-{state['application_id']}", CreditRecordOpened(...).to_store_dict(), causation_id=...)
         await self._record_node_execution("open_credit_record",["applicant_id"],["credit_stream_opened"],int((time.time()-t)*1000))
         return state
 
     async def _node_load_registry(self, state):
         t = time.time()
-        # TODO: profile = await self.registry.get_company(state["applicant_id"])
-        # TODO: hist    = await self.registry.get_financial_history(state["applicant_id"], years=[2022,2023,2024])
-        # TODO: flags   = await self.registry.get_compliance_flags(state["applicant_id"])
-        # TODO: loans   = await self.registry.get_loan_relationships(state["applicant_id"])
         ms = int((time.time()-t)*1000)
         await self._record_tool_call("query_applicant_registry", f"company_id={state['applicant_id']}", "3yr financials loaded", ms)
-        # TODO: await self._append_stream(f"credit-{state['application_id']}", HistoricalProfileConsumed(...).to_store_dict())
         await self._record_node_execution("load_applicant_registry",["applicant_id"],["historical_financials","compliance_flags","loan_history"],ms)
         return {**state,"company_profile":{},"historical_financials":[],"compliance_flags":[],"loan_history":[]}
 
     async def _node_load_facts(self, state):
         t = time.time()
-        # TODO: load ExtractionCompleted events from f"docpkg-{state['application_id']}"
-        # TODO: merge FinancialFacts from income_statement + balance_sheet documents
         ms = int((time.time()-t)*1000)
         await self._record_tool_call("load_event_store_stream", f"docpkg-{state['application_id']}", "ExtractionCompleted events loaded", ms)
-        # TODO: await self._append_stream(f"credit-{state['application_id']}", ExtractedFactsConsumed(...).to_store_dict())
         await self._record_node_execution("load_extracted_facts",["document_package_events"],["extracted_facts","quality_flags"],ms)
         return {**state,"extracted_facts":{},"quality_flags":[]}
 
@@ -275,8 +266,6 @@ Prior loans: {state.get('loan_history',[])}"""
     async def _node_write(self, state):
         t = time.time()
         app_id = state["application_id"]; d = state["credit_decision"]
-        # TODO: append CreditAnalysisCompleted to f"credit-{app_id}"
-        # TODO: append FraudScreeningRequested to f"loan-{app_id}"
         events_written = [
             {"stream_id":f"credit-{app_id}","event_type":"CreditAnalysisCompleted","stream_position":"TODO"},
             {"stream_id":f"loan-{app_id}","event_type":"FraudScreeningRequested","stream_position":"TODO"},
