@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+documents/
+data/seed_events.jsonl
+*.egg-info/
+dist/
+.DS_Store
