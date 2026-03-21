@@ -6,7 +6,7 @@ COMPLETION CHECKLIST (implement in order):
   [x] Phase 1, Day 1: load_stream()
   [x] Phase 1, Day 2: load_all()  (needed for projection daemon)
   [x] Phase 1, Day 2: get_event() (needed for causation chain)
-  [ ] Phase 4:        UpcasterRegistry.upcast() integration in load_stream/load_all
+  [x] Phase 4:        UpcasterRegistry.upcast() integration in load_stream/load_all
 """
 from __future__ import annotations
 import json
@@ -26,13 +26,6 @@ class OptimisticConcurrencyError(Exception):
 class EventStore:
     """
     Append-only PostgreSQL event store. All agents and projections use this class.
-
-    IMPLEMENT IN ORDER — see inline guides in each method:
-      1. stream_version()   — simplest, needed immediately
-      2. append()           — most critical; OCC correctness is the exam
-      3. load_stream()      — needed for aggregate replay
-      4. load_all()         — async generator, needed for projection daemon
-      5. get_event()        — needed for causation chain audit
     """
 
     def __init__(self, db_url: str, upcaster_registry=None):
@@ -40,8 +33,28 @@ class EventStore:
         self.upcasters = upcaster_registry
         self._pool: asyncpg.Pool | None = None
 
+    async def _init_connection(self, conn):
+        """Register JSON/JSONB codecs so asyncpg returns dicts instead of strings."""
+        await conn.set_type_codec(
+            'jsonb',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+        await conn.set_type_codec(
+            'json',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+
     async def connect(self) -> None:
-        self._pool = await asyncpg.create_pool(self.db_url, min_size=2, max_size=10)
+        self._pool = await asyncpg.create_pool(
+            self.db_url,
+            min_size=2,
+            max_size=10,
+            init=self._init_connection
+        )
 
     async def close(self) -> None:
         if self._pool: await self._pool.close()
@@ -139,8 +152,13 @@ class EventStore:
             rows = await conn.fetch(q, *params)
             events = []
             for row in rows:
-                e = {**dict(row), "payload": dict(row["payload"]),
-                                   "metadata": dict(row["metadata"])}
+                payload = row["payload"]
+                metadata = row["metadata"]
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                if isinstance(metadata, str):
+                    metadata = json.loads(metadata)
+                e = {**dict(row), "payload": payload, "metadata": metadata}
                 if self.upcasters: e = self.upcasters.upcast(e)
                 events.append(e)
             return events
@@ -176,8 +194,13 @@ class EventStore:
                         pos, batch_size)
                 if not rows: break
                 for row in rows:
-                    e = {**dict(row), "payload": dict(row["payload"]),
-                                       "metadata": dict(row["metadata"])}
+                    payload = row["payload"]
+                    metadata = row["metadata"]
+                    if isinstance(payload, str):
+                        payload = json.loads(payload)
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata)
+                    e = {**dict(row), "payload": payload, "metadata": metadata}
                     if self.upcasters: e = self.upcasters.upcast(e)
                     yield e
                 pos = rows[-1]["global_position"]
@@ -189,8 +212,27 @@ class EventStore:
             row = await conn.fetchrow(
                 "SELECT * FROM events WHERE event_id=$1", event_id)
             if not row: return None
-            return {**dict(row), "payload": dict(row["payload"]),
-                                  "metadata": dict(row["metadata"])}
+            payload = row["payload"]
+            metadata = row["metadata"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            return {**dict(row), "payload": payload, "metadata": metadata}
+
+    async def archive_stream(self, stream_id: str) -> None:
+        """Marks a stream as archived."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE event_streams SET archived_at = NOW() WHERE stream_id = $1",
+                stream_id)
+
+    async def get_stream_metadata(self, stream_id: str) -> dict | None:
+        """Returns stream metadata."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM event_streams WHERE stream_id = $1", stream_id)
+            return dict(row) if row else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

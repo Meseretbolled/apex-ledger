@@ -41,11 +41,6 @@ class DocumentProcessingAgent(BaseApexAgent):
     LangGraph nodes:
         validate_inputs → validate_document_formats → extract_income_statement →
         extract_balance_sheet → assess_quality → write_output
-
-    Output events:
-        docpkg-{id}: DocumentFormatValidated, ExtractionStarted, ExtractionCompleted,
-                     QualityAssessmentCompleted, PackageReadyForAnalysis
-        loan-{id}:   CreditAnalysisRequested
     """
 
     def build_graph(self):
@@ -76,7 +71,6 @@ class DocumentProcessingAgent(BaseApexAgent):
     async def _node_validate_inputs(self, state):
         t = time.time()
         app_id = state["application_id"]
-        # Load loan stream to find DocumentUploaded events
         loan_events = await self.store.load_stream(f"loan-{app_id}")
         doc_events = [e for e in loan_events if e["event_type"] == "DocumentUploaded"]
         if not doc_events:
@@ -92,15 +86,13 @@ class DocumentProcessingAgent(BaseApexAgent):
         app_id = state["application_id"]
         import os
         for doc_id, path in zip(state["document_ids"] or [], state["document_paths"] or []):
-            full_path = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
-            page_count = 1
             detected_format = "pdf" if path.endswith(".pdf") else "xlsx"
             await self._append_stream(f"docpkg-{app_id}", {
                 "event_type": "DocumentFormatValidated", "event_version": 1,
                 "payload": {
                     "package_id": app_id, "document_id": doc_id,
                     "document_type": "income_statement",
-                    "page_count": page_count, "detected_format": detected_format,
+                    "page_count": 1, "detected_format": detected_format,
                     "validated_at": datetime.utcnow().isoformat(),
                 }
             })
@@ -115,33 +107,26 @@ class DocumentProcessingAgent(BaseApexAgent):
         now = datetime.utcnow().isoformat()
         await self._append_stream(f"docpkg-{app_id}", {
             "event_type": "ExtractionStarted", "event_version": 1,
-            "payload": {
-                "package_id": app_id, "document_id": doc_id,
-                "document_type": "income_statement",
-                "pipeline_version": "week3-v1.0",
-                "extraction_model": "gemini-2.0-flash",
-                "started_at": now,
-            }
+            "payload": {"package_id": app_id, "document_id": doc_id,
+                        "document_type": "income_statement",
+                        "pipeline_version": "week3-v1.0",
+                        "extraction_model": "gemini-2.0-flash", "started_at": now}
         })
-        # Try Week 3 pipeline, fall back to empty facts
         facts = {}
         try:
             from document_refinery.pipeline import extract_financial_facts
             facts = await extract_financial_facts(path, "income_statement")
         except Exception:
             facts = {}
-        extraction_results = state.get("extraction_results") or []
+        extraction_results = list(state.get("extraction_results") or [])
         extraction_results.append({"doc_type": "income_statement", "doc_id": doc_id, "facts": facts})
         await self._append_stream(f"docpkg-{app_id}", {
             "event_type": "ExtractionCompleted", "event_version": 1,
-            "payload": {
-                "package_id": app_id, "document_id": doc_id,
-                "document_type": "income_statement",
-                "facts": facts,
-                "raw_text_length": 3000, "tables_extracted": 2,
-                "processing_ms": int((time.time()-t)*1000),
-                "completed_at": datetime.utcnow().isoformat(),
-            }
+            "payload": {"package_id": app_id, "document_id": doc_id,
+                        "document_type": "income_statement", "facts": facts,
+                        "raw_text_length": 3000, "tables_extracted": 2,
+                        "processing_ms": int((time.time()-t)*1000),
+                        "completed_at": datetime.utcnow().isoformat()}
         })
         await self._record_tool_call("week3_extraction_pipeline", f"income_statement:{path}", f"extracted {len(facts)} fields", int((time.time()-t)*1000))
         await self._record_node_execution("extract_income_statement", ["document_paths"], ["extraction_results"], int((time.time()-t)*1000))
@@ -155,13 +140,10 @@ class DocumentProcessingAgent(BaseApexAgent):
         now = datetime.utcnow().isoformat()
         await self._append_stream(f"docpkg-{app_id}", {
             "event_type": "ExtractionStarted", "event_version": 1,
-            "payload": {
-                "package_id": app_id, "document_id": doc_id,
-                "document_type": "balance_sheet",
-                "pipeline_version": "week3-v1.0",
-                "extraction_model": "gemini-2.0-flash",
-                "started_at": now,
-            }
+            "payload": {"package_id": app_id, "document_id": doc_id,
+                        "document_type": "balance_sheet",
+                        "pipeline_version": "week3-v1.0",
+                        "extraction_model": "gemini-2.0-flash", "started_at": now}
         })
         facts = {}
         try:
@@ -169,18 +151,15 @@ class DocumentProcessingAgent(BaseApexAgent):
             facts = await extract_financial_facts(path, "balance_sheet")
         except Exception:
             facts = {}
-        extraction_results = state.get("extraction_results") or []
+        extraction_results = list(state.get("extraction_results") or [])
         extraction_results.append({"doc_type": "balance_sheet", "doc_id": doc_id, "facts": facts})
         await self._append_stream(f"docpkg-{app_id}", {
             "event_type": "ExtractionCompleted", "event_version": 1,
-            "payload": {
-                "package_id": app_id, "document_id": doc_id,
-                "document_type": "balance_sheet",
-                "facts": facts,
-                "raw_text_length": 2500, "tables_extracted": 2,
-                "processing_ms": int((time.time()-t)*1000),
-                "completed_at": datetime.utcnow().isoformat(),
-            }
+            "payload": {"package_id": app_id, "document_id": doc_id,
+                        "document_type": "balance_sheet", "facts": facts,
+                        "raw_text_length": 2500, "tables_extracted": 2,
+                        "processing_ms": int((time.time()-t)*1000),
+                        "completed_at": datetime.utcnow().isoformat()}
         })
         await self._record_tool_call("week3_extraction_pipeline", f"balance_sheet:{path}", f"extracted {len(facts)} fields", int((time.time()-t)*1000))
         await self._record_node_execution("extract_balance_sheet", ["document_paths"], ["extraction_results"], int((time.time()-t)*1000))
@@ -212,16 +191,14 @@ No markdown, no code fences."""
         doc_id = f"doc-{uuid4().hex[:8]}"
         await self._append_stream(f"docpkg-{app_id}", {
             "event_type": "QualityAssessmentCompleted", "event_version": 1,
-            "payload": {
-                "package_id": app_id, "document_id": doc_id,
-                "overall_confidence": qa.get("overall_confidence", 0.80),
-                "is_coherent": qa.get("is_coherent", True),
-                "anomalies": qa.get("anomalies", []),
-                "critical_missing_fields": qa.get("critical_missing_fields", []),
-                "reextraction_recommended": qa.get("reextraction_recommended", False),
-                "auditor_notes": qa.get("auditor_notes", ""),
-                "assessed_at": datetime.utcnow().isoformat(),
-            }
+            "payload": {"package_id": app_id, "document_id": doc_id,
+                        "overall_confidence": qa.get("overall_confidence", 0.80),
+                        "is_coherent": qa.get("is_coherent", True),
+                        "anomalies": qa.get("anomalies", []),
+                        "critical_missing_fields": qa.get("critical_missing_fields", []),
+                        "reextraction_recommended": qa.get("reextraction_recommended", False),
+                        "auditor_notes": qa.get("auditor_notes", ""),
+                        "assessed_at": datetime.utcnow().isoformat()}
         })
         await self._record_node_execution("assess_quality", ["extraction_results"], ["quality_assessment"], int((time.time()-t)*1000), tok_in, tok_out, cost)
         return {**state, "quality_assessment": qa}
@@ -234,22 +211,17 @@ No markdown, no code fences."""
         has_flags = bool(qa.get("critical_missing_fields"))
         await self._append_stream(f"docpkg-{app_id}", {
             "event_type": "PackageReadyForAnalysis", "event_version": 1,
-            "payload": {
-                "package_id": app_id, "application_id": app_id,
-                "documents_processed": len(state.get("extraction_results") or []),
-                "has_quality_flags": has_flags,
-                "quality_flag_count": len(qa.get("critical_missing_fields", [])),
-                "ready_at": now,
-            }
+            "payload": {"package_id": app_id, "application_id": app_id,
+                        "documents_processed": len(state.get("extraction_results") or []),
+                        "has_quality_flags": has_flags,
+                        "quality_flag_count": len(qa.get("critical_missing_fields", [])),
+                        "ready_at": now}
         })
         await self._append_stream(f"loan-{app_id}", {
             "event_type": "CreditAnalysisRequested", "event_version": 1,
-            "payload": {
-                "application_id": app_id,
-                "requested_at": now,
-                "requested_by": f"system:session-{self.session_id}",
-                "priority": "NORMAL",
-            }
+            "payload": {"application_id": app_id, "requested_at": now,
+                        "requested_by": f"system:session-{self.session_id}",
+                        "priority": "NORMAL"}
         })
         events_written = [
             {"stream_id": f"docpkg-{app_id}", "event_type": "PackageReadyForAnalysis"},
@@ -280,10 +252,6 @@ class FraudDetectionAgent(BaseApexAgent):
     """
     Cross-references extracted document facts against historical registry data.
     Detects anomalous discrepancies that suggest fraud or document manipulation.
-
-    LangGraph nodes:
-        validate_inputs → load_document_facts → cross_reference_registry →
-        analyze_fraud_patterns → write_output
     """
 
     def build_graph(self):
@@ -335,7 +303,6 @@ class FraudDetectionAgent(BaseApexAgent):
     async def _node_cross_reference(self, state):
         t = time.time()
         app_id = state["application_id"]
-        # Load applicant_id from loan stream
         loan_events = await self.store.load_stream(f"loan-{app_id}")
         submitted = next((e for e in loan_events if e["event_type"] == "ApplicationSubmitted"), None)
         applicant_id = submitted["payload"].get("applicant_id") if submitted else "COMP-001"
@@ -390,14 +357,11 @@ Compliance flags: {profile.get('compliance_flags',[])}"""
             tok_in = tok_out = 0; cost = 0.0
         fraud_score = float(assessment.get("fraud_score", 0.05))
         anomalies = assessment.get("anomalies", [])
-        # Append FraudAnomalyDetected for each anomaly
         for anomaly in anomalies:
             await self._append_stream(f"fraud-{app_id}", {
                 "event_type": "FraudAnomalyDetected", "event_version": 1,
-                "payload": {
-                    "application_id": app_id, "session_id": self.session_id,
-                    "anomaly": anomaly, "detected_at": datetime.utcnow().isoformat(),
-                }
+                "payload": {"application_id": app_id, "session_id": self.session_id,
+                            "anomaly": anomaly, "detected_at": datetime.utcnow().isoformat()}
             })
         await self._record_node_execution("analyze_fraud_patterns", ["extracted_facts", "historical_financials"], ["fraud_score", "anomalies"], int((time.time()-t)*1000), tok_in, tok_out, cost)
         return {**state, "fraud_score": fraud_score, "anomalies": anomalies, "fraud_signals": assessment}
@@ -414,23 +378,18 @@ Compliance flags: {profile.get('compliance_flags',[])}"""
         input_hash = self._sha({"app_id": app_id, "session": self.session_id})
         await self._append_stream(f"fraud-{app_id}", {
             "event_type": "FraudScreeningCompleted", "event_version": 1,
-            "payload": {
-                "application_id": app_id, "session_id": self.session_id,
-                "fraud_score": fraud_score, "risk_level": risk_level,
-                "anomalies_found": len(anomalies), "recommendation": recommendation,
-                "screening_model_version": self.model,
-                "input_data_hash": input_hash,
-                "completed_at": now,
-            }
+            "payload": {"application_id": app_id, "session_id": self.session_id,
+                        "fraud_score": fraud_score, "risk_level": risk_level,
+                        "anomalies_found": len(anomalies), "recommendation": recommendation,
+                        "screening_model_version": self.model,
+                        "input_data_hash": input_hash, "completed_at": now}
         })
         await self._append_stream(f"loan-{app_id}", {
             "event_type": "ComplianceCheckRequested", "event_version": 1,
-            "payload": {
-                "application_id": app_id, "requested_at": now,
-                "triggered_by_event_id": self._sha(self.session_id),
-                "regulation_set_version": "2026-Q1",
-                "rules_to_evaluate": ["REG-001","REG-002","REG-003","REG-004","REG-005","REG-006"],
-            }
+            "payload": {"application_id": app_id, "requested_at": now,
+                        "triggered_by_event_id": self._sha(self.session_id),
+                        "regulation_set_version": "2026-Q1",
+                        "rules_to_evaluate": ["REG-001","REG-002","REG-003","REG-004","REG-005","REG-006"]}
         })
         events_written = [
             {"stream_id": f"fraud-{app_id}", "event_type": "FraudScreeningCompleted"},
@@ -520,16 +479,28 @@ class ComplianceAgent(BaseApexAgent):
         g = StateGraph(ComplianceState)
         g.add_node("validate_inputs",      self._node_validate_inputs)
         g.add_node("load_company_profile", self._node_load_profile)
-        g.add_node("evaluate_reg001",      lambda s: self._evaluate_rule(s, "REG-001"))
-        g.add_node("evaluate_reg002",      lambda s: self._evaluate_rule(s, "REG-002"))
-        g.add_node("evaluate_reg003",      lambda s: self._evaluate_rule(s, "REG-003"))
-        g.add_node("evaluate_reg004",      lambda s: self._evaluate_rule(s, "REG-004"))
-        g.add_node("evaluate_reg005",      lambda s: self._evaluate_rule(s, "REG-005"))
-        g.add_node("evaluate_reg006",      lambda s: self._evaluate_rule(s, "REG-006"))
+
+        # FIX: use proper async wrapper methods instead of lambdas
+        # Lambdas return coroutine objects — LangGraph needs awaitable async functions
+        async def _reg001(s): return await self._evaluate_rule(s, "REG-001")
+        async def _reg002(s): return await self._evaluate_rule(s, "REG-002")
+        async def _reg003(s): return await self._evaluate_rule(s, "REG-003")
+        async def _reg004(s): return await self._evaluate_rule(s, "REG-004")
+        async def _reg005(s): return await self._evaluate_rule(s, "REG-005")
+        async def _reg006(s): return await self._evaluate_rule(s, "REG-006")
+
+        g.add_node("evaluate_reg001", _reg001)
+        g.add_node("evaluate_reg002", _reg002)
+        g.add_node("evaluate_reg003", _reg003)
+        g.add_node("evaluate_reg004", _reg004)
+        g.add_node("evaluate_reg005", _reg005)
+        g.add_node("evaluate_reg006", _reg006)
         g.add_node("write_output",         self._node_write_output)
+
         g.set_entry_point("validate_inputs")
         g.add_edge("validate_inputs",      "load_company_profile")
         g.add_edge("load_company_profile", "evaluate_reg001")
+
         for src, nxt in [
             ("evaluate_reg001", "evaluate_reg002"),
             ("evaluate_reg002", "evaluate_reg003"),
@@ -539,6 +510,7 @@ class ComplianceAgent(BaseApexAgent):
             ("evaluate_reg006", "write_output"),
         ]:
             g.add_conditional_edges(src, lambda s, _nxt=nxt: "write_output" if s["has_hard_block"] else _nxt)
+
         g.add_edge("write_output", END)
         return g.compile()
 
@@ -565,18 +537,16 @@ class ComplianceAgent(BaseApexAgent):
         loan_events = await self.store.load_stream(f"loan-{app_id}")
         submitted = next((e for e in loan_events if e["event_type"] == "ApplicationSubmitted"), None)
         applicant_id = submitted["payload"].get("applicant_id") if submitted else "COMP-001"
-        requested_amount = float(submitted["payload"].get("requested_amount_usd", 0)) if submitted else 0
+        requested_amount = float(str(submitted["payload"].get("requested_amount_usd", 0)).replace(",","")) if submitted else 0
         profile = await self.registry.get_company(applicant_id)
         flags = await self.registry.get_compliance_flags(applicant_id)
         now = datetime.utcnow().isoformat()
         await self._append_stream(f"compliance-{app_id}", {
             "event_type": "ComplianceCheckInitiated", "event_version": 1,
-            "payload": {
-                "application_id": app_id, "session_id": self.session_id,
-                "regulation_set_version": "2026-Q1",
-                "rules_to_evaluate": list(REGULATIONS.keys()),
-                "initiated_at": now,
-            }
+            "payload": {"application_id": app_id, "session_id": self.session_id,
+                        "regulation_set_version": "2026-Q1",
+                        "rules_to_evaluate": list(REGULATIONS.keys()),
+                        "initiated_at": now}
         })
         company_profile = {
             "company_id": applicant_id,
@@ -602,41 +572,34 @@ class ComplianceAgent(BaseApexAgent):
         if rule_id == "REG-006":
             await self._append_stream(f"compliance-{app_id}", {
                 "event_type": "ComplianceRuleNoted", "event_version": 1,
-                "payload": {
-                    "application_id": app_id, "session_id": self.session_id,
-                    "rule_id": rule_id, "rule_name": reg["name"],
-                    "note_type": reg.get("note_type", "CRA_CONSIDERATION"),
-                    "note_text": reg.get("note_text", ""),
-                    "evaluated_at": now,
-                }
+                "payload": {"application_id": app_id, "session_id": self.session_id,
+                            "rule_id": rule_id, "rule_name": reg["name"],
+                            "note_type": reg.get("note_type", "CRA_CONSIDERATION"),
+                            "note_text": reg.get("note_text", ""),
+                            "evaluated_at": now}
             })
             rule_results.append({"rule_id": rule_id, "result": "NOTED"})
         elif passes:
             await self._append_stream(f"compliance-{app_id}", {
                 "event_type": "ComplianceRulePassed", "event_version": 1,
-                "payload": {
-                    "application_id": app_id, "session_id": self.session_id,
-                    "rule_id": rule_id, "rule_name": reg["name"],
-                    "rule_version": reg["version"], "evidence_hash": evidence_hash,
-                    "evaluation_notes": f"{reg['name']}: Clear.",
-                    "evaluated_at": now,
-                }
+                "payload": {"application_id": app_id, "session_id": self.session_id,
+                            "rule_id": rule_id, "rule_name": reg["name"],
+                            "rule_version": reg["version"], "evidence_hash": evidence_hash,
+                            "evaluation_notes": f"{reg['name']}: Clear.",
+                            "evaluated_at": now}
             })
             rule_results.append({"rule_id": rule_id, "result": "PASSED"})
         else:
             await self._append_stream(f"compliance-{app_id}", {
                 "event_type": "ComplianceRuleFailed", "event_version": 1,
-                "payload": {
-                    "application_id": app_id, "session_id": self.session_id,
-                    "rule_id": rule_id, "rule_name": reg["name"],
-                    "rule_version": reg["version"],
-                    "failure_reason": reg["failure_reason"],
-                    "is_hard_block": reg["is_hard_block"],
-                    "remediation_available": reg.get("remediation") is not None,
-                    "remediation_description": reg.get("remediation"),
-                    "evidence_hash": evidence_hash,
-                    "evaluated_at": now,
-                }
+                "payload": {"application_id": app_id, "session_id": self.session_id,
+                            "rule_id": rule_id, "rule_name": reg["name"],
+                            "rule_version": reg["version"],
+                            "failure_reason": reg["failure_reason"],
+                            "is_hard_block": reg["is_hard_block"],
+                            "remediation_available": reg.get("remediation") is not None,
+                            "remediation_description": reg.get("remediation"),
+                            "evidence_hash": evidence_hash, "evaluated_at": now}
             })
             rule_results.append({"rule_id": rule_id, "result": "FAILED", "is_hard_block": reg["is_hard_block"]})
         node_name = f"evaluate_{rule_id.lower().replace('-','_')}"
@@ -659,26 +622,22 @@ class ComplianceAgent(BaseApexAgent):
         verdict = "BLOCKED" if has_block else ("CLEAR" if failed == 0 else "CONDITIONAL")
         await self._append_stream(f"compliance-{app_id}", {
             "event_type": "ComplianceCheckCompleted", "event_version": 1,
-            "payload": {
-                "application_id": app_id, "session_id": self.session_id,
-                "rules_evaluated": passed + failed + noted,
-                "rules_passed": passed, "rules_failed": failed, "rules_noted": noted,
-                "has_hard_block": has_block, "overall_verdict": verdict,
-                "completed_at": now,
-            }
+            "payload": {"application_id": app_id, "session_id": self.session_id,
+                        "rules_evaluated": passed + failed + noted,
+                        "rules_passed": passed, "rules_failed": failed, "rules_noted": noted,
+                        "has_hard_block": has_block, "overall_verdict": verdict,
+                        "completed_at": now}
         })
         if has_block:
             block_rule = state.get("block_rule_id", "UNKNOWN")
             await self._append_stream(f"loan-{app_id}", {
                 "event_type": "ApplicationDeclined", "event_version": 1,
-                "payload": {
-                    "application_id": app_id,
-                    "decline_reasons": [f"Compliance hard block: {block_rule}"],
-                    "declined_by": "compliance-system",
-                    "adverse_action_notice_required": True,
-                    "adverse_action_codes": ["COMPLIANCE_BLOCK"],
-                    "declined_at": now,
-                }
+                "payload": {"application_id": app_id,
+                            "decline_reasons": [f"Compliance hard block: {block_rule}"],
+                            "declined_by": "compliance-system",
+                            "adverse_action_notice_required": True,
+                            "adverse_action_codes": ["COMPLIANCE_BLOCK"],
+                            "declined_at": now}
             })
             events_written = [
                 {"stream_id": f"compliance-{app_id}", "event_type": "ComplianceCheckCompleted"},
@@ -688,11 +647,9 @@ class ComplianceAgent(BaseApexAgent):
         else:
             await self._append_stream(f"loan-{app_id}", {
                 "event_type": "DecisionRequested", "event_version": 1,
-                "payload": {
-                    "application_id": app_id, "requested_at": now,
-                    "all_analyses_complete": True,
-                    "triggered_by_event_id": self._sha(self.session_id),
-                }
+                "payload": {"application_id": app_id, "requested_at": now,
+                            "all_analyses_complete": True,
+                            "triggered_by_event_id": self._sha(self.session_id)}
             })
             events_written = [
                 {"stream_id": f"compliance-{app_id}", "event_type": "ComplianceCheckCompleted"},
@@ -700,8 +657,7 @@ class ComplianceAgent(BaseApexAgent):
             ]
             await self._record_output_written(events_written, f"Compliance {verdict}. Decision requested.")
         await self._record_node_execution("write_output", ["rule_results"], ["events_written"], int((time.time()-t)*1000))
-        next_agent = None if has_block else "decision_orchestrator"
-        return {**state, "next_agent": next_agent}
+        return {**state, "next_agent": None if has_block else "decision_orchestrator"}
 
 
 # ─── DECISION ORCHESTRATOR ────────────────────────────────────────────────────
@@ -726,12 +682,6 @@ class OrchestratorState(TypedDict):
 class DecisionOrchestratorAgent(BaseApexAgent):
     """
     Synthesises all prior agent outputs into a final recommendation.
-    The only agent that reads from multiple aggregate streams before deciding.
-
-    LangGraph nodes:
-        validate_inputs → load_credit_result → load_fraud_result →
-        load_compliance_result → synthesize_decision → apply_hard_constraints →
-        write_output
     """
 
     def build_graph(self):
@@ -849,13 +799,10 @@ Rationale: {decision.get('rationale','')}"""
         fraud_score = float(fraud.get("fraud_score", 0.05))
         compliance_verdict = compliance.get("overall_verdict", "CLEAR")
         overrides = []
-        # Rule 1: compliance BLOCKED → DECLINE
         if compliance_verdict == "BLOCKED":
             rec = "DECLINE"; overrides.append("COMPLIANCE_BLOCKED")
-        # Rule 2: confidence < 0.60 → REFER
         if conf < 0.60 and rec != "DECLINE":
             rec = "REFER"; overrides.append("LOW_CONFIDENCE")
-        # Rule 3: fraud_score > 0.60 → REFER
         if fraud_score > 0.60 and rec != "DECLINE":
             rec = "REFER"; overrides.append("HIGH_FRAUD_SCORE")
         await self._record_node_execution("apply_hard_constraints", ["recommendation","confidence"], ["recommendation"], int((time.time()-t)*1000))
@@ -874,56 +821,44 @@ Rationale: {decision.get('rationale','')}"""
         credit = state.get("credit_result") or {}
         await self._append_stream(f"loan-{app_id}", {
             "event_type": "DecisionGenerated", "event_version": 2,
-            "payload": {
-                "application_id": app_id,
-                "orchestrator_session_id": self.session_id,
-                "recommendation": rec,
-                "confidence": conf,
-                "approved_amount_usd": str(approved_amount) if approved_amount and rec == "APPROVE" else None,
-                "conditions": conditions if rec == "APPROVE" else [],
-                "executive_summary": summary,
-                "key_risks": credit.get("decision", {}).get("key_concerns", []),
-                "contributing_sessions": [self.session_id],
-                "model_versions": {"orchestrator": self.model},
-                "generated_at": now,
-            }
+            "payload": {"application_id": app_id,
+                        "orchestrator_session_id": self.session_id,
+                        "recommendation": rec, "confidence": conf,
+                        "approved_amount_usd": str(approved_amount) if approved_amount and rec == "APPROVE" else None,
+                        "conditions": conditions if rec == "APPROVE" else [],
+                        "executive_summary": summary,
+                        "key_risks": credit.get("decision", {}).get("key_concerns", []),
+                        "contributing_sessions": [self.session_id],
+                        "model_versions": {"orchestrator": self.model},
+                        "generated_at": now}
         })
         if rec == "APPROVE":
             await self._append_stream(f"loan-{app_id}", {
                 "event_type": "ApplicationApproved", "event_version": 1,
-                "payload": {
-                    "application_id": app_id,
-                    "approved_amount_usd": str(approved_amount or 0),
-                    "interest_rate_pct": 7.5,
-                    "term_months": 36,
-                    "conditions": conditions,
-                    "approved_by": "auto",
-                    "effective_date": datetime.utcnow().strftime("%Y-%m-%d"),
-                    "approved_at": now,
-                }
+                "payload": {"application_id": app_id,
+                            "approved_amount_usd": str(approved_amount or 0),
+                            "interest_rate_pct": 7.5, "term_months": 36,
+                            "conditions": conditions, "approved_by": "auto",
+                            "effective_date": datetime.utcnow().strftime("%Y-%m-%d"),
+                            "approved_at": now}
             })
         elif rec == "DECLINE":
             await self._append_stream(f"loan-{app_id}", {
                 "event_type": "ApplicationDeclined", "event_version": 1,
-                "payload": {
-                    "application_id": app_id,
-                    "decline_reasons": ["Insufficient creditworthiness based on multi-agent analysis"] + overrides,
-                    "declined_by": "auto",
-                    "adverse_action_notice_required": True,
-                    "adverse_action_codes": ["HIGH_RISK"],
-                    "declined_at": now,
-                }
+                "payload": {"application_id": app_id,
+                            "decline_reasons": ["Insufficient creditworthiness"] + overrides,
+                            "declined_by": "auto",
+                            "adverse_action_notice_required": True,
+                            "adverse_action_codes": ["HIGH_RISK"],
+                            "declined_at": now}
             })
-        else:  # REFER
+        else:
             await self._append_stream(f"loan-{app_id}", {
                 "event_type": "HumanReviewRequested", "event_version": 1,
-                "payload": {
-                    "application_id": app_id,
-                    "reason": f"Low confidence ({conf:.2f}) or fraud flags require human review.",
-                    "decision_event_id": self._sha(self.session_id),
-                    "assigned_to": None,
-                    "requested_at": now,
-                }
+                "payload": {"application_id": app_id,
+                            "reason": f"Low confidence ({conf:.2f}) or fraud flags require human review.",
+                            "decision_event_id": self._sha(self.session_id),
+                            "assigned_to": None, "requested_at": now}
             })
         events_written = [{"stream_id": f"loan-{app_id}", "event_type": "DecisionGenerated"}]
         await self._record_output_written(events_written, f"Decision: {rec}. Confidence: {conf:.0%}.")
