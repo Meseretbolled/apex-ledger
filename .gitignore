@@ -11,3 +11,4 @@ data/seed_events.jsonl
 dist/
 .DS_Store
 .venv/
+=0.8.0
