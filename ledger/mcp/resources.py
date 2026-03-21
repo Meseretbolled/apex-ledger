@@ -1,19 +1,4 @@
-"""
-ledger/mcp/resources.py
-========================
-6 MCP resources for The Ledger.
 
-Resources are read-only data sources that external systems can query.
-Unlike tools, resources don't trigger side effects.
-
-RESOURCES:
-  1. ledger://applications/{id}           — full application event history
-  2. ledger://applications/{id}/summary   — projection snapshot
-  3. ledger://applications/{id}/compliance — compliance audit at time T
-  4. ledger://agents/performance           — all agent performance metrics
-  5. ledger://streams/{stream_id}          — raw event stream
-  6. ledger://ledger/health               — projection lag and system health
-"""
 from __future__ import annotations
 from datetime import datetime
 

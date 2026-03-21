@@ -7,6 +7,8 @@ Gas Town pattern: every agent appends AgentSessionStarted as its
 very first event before doing any work. On crash recovery, the agent
 replays this stream to reconstruct exactly where it left off.
 
+apply() is refactored into per-event handler methods — one method per event type.
+
 BUSINESS RULES ENFORCED:
   1. AgentSessionStarted must be the first event (Gas Town anchor)
   2. No decision events allowed before AgentSessionStarted
@@ -57,7 +59,9 @@ class AgentSessionAggregate:
     version: int = 0
 
     @classmethod
-    async def load(cls, store, agent_id: str, session_id: str) -> "AgentSessionAggregate":
+    async def load(
+        cls, store, agent_id: str, session_id: str
+    ) -> "AgentSessionAggregate":
         """Load and replay event stream to rebuild aggregate state."""
         agg = cls(agent_id=agent_id, session_id=session_id)
         stream_events = await store.load_stream(f"agent-{agent_id}-{session_id}")
@@ -66,62 +70,70 @@ class AgentSessionAggregate:
         return agg
 
     def apply(self, event: dict) -> None:
-        """Apply one event to update aggregate state."""
-        et = event.get("event_type")
-        p = event.get("payload", {})
+        """
+        Dispatch to per-event handler method.
+        One method per event type — refactored from monolithic if/elif chain.
+        """
+        et = event.get("event_type", "")
         self.version += 1
+        handler = getattr(self, f"_apply_{et.lower()}", None)
+        if handler:
+            handler(event.get("payload", {}))
 
-        if et == "AgentSessionStarted":
-            self.status = SessionStatus.ACTIVE
-            self.agent_type = p.get("agent_type")
-            self.application_id = p.get("application_id")
-            self.model_version = p.get("model_version")
-            self.context_source = p.get("context_source", "fresh")
-            self.context_loaded = True
+    # ── Per-event handler methods ──────────────────────────────────────────────
 
-        elif et == "AgentInputValidated":
-            # Inputs have been validated — session is properly initialised
-            pass
+    def _apply_agentsessionstarted(self, p: dict) -> None:
+        self.status = SessionStatus.ACTIVE
+        self.agent_type = p.get("agent_type")
+        self.application_id = p.get("application_id")
+        self.model_version = p.get("model_version")
+        self.context_source = p.get("context_source", "fresh")
+        self.context_loaded = True
 
-        elif et == "AgentInputValidationFailed":
-            # Inputs failed validation — session cannot proceed
-            self.status = SessionStatus.FAILED
+    def _apply_agentinputvalidated(self, p: dict) -> None:
+        # Inputs have been validated — session is properly initialised
+        pass
 
-        elif et == "AgentNodeExecuted":
-            node_name = p.get("node_name")
-            if node_name:
-                self.nodes_executed.append(node_name)
-                self.last_successful_node = node_name
-            # Accumulate LLM costs
-            if p.get("llm_called"):
-                self.total_llm_calls += 1
-                self.total_tokens += (p.get("llm_tokens_input") or 0) + (p.get("llm_tokens_output") or 0)
-                self.total_cost_usd += p.get("llm_cost_usd") or 0.0
+    def _apply_agentinputvalidationfailed(self, p: dict) -> None:
+        self.status = SessionStatus.FAILED
 
-        elif et == "AgentToolCalled":
-            # Tool calls are informational — no state change needed
-            pass
+    def _apply_agentnodeexecuted(self, p: dict) -> None:
+        node_name = p.get("node_name")
+        if node_name:
+            self.nodes_executed.append(node_name)
+            self.last_successful_node = node_name
+        if p.get("llm_called"):
+            self.total_llm_calls += 1
+            self.total_tokens += (
+                (p.get("llm_tokens_input") or 0)
+                + (p.get("llm_tokens_output") or 0)
+            )
+            self.total_cost_usd += p.get("llm_cost_usd") or 0.0
 
-        elif et == "AgentOutputWritten":
-            # Agent has written its output events to domain streams
-            pass
+    def _apply_agenttoolcalled(self, p: dict) -> None:
+        # Tool calls are informational — no state change needed
+        pass
 
-        elif et == "AgentSessionCompleted":
-            self.status = SessionStatus.COMPLETED
-            self.total_llm_calls = p.get("total_llm_calls", self.total_llm_calls)
-            self.total_tokens = p.get("total_tokens_used", self.total_tokens)
-            self.total_cost_usd = p.get("total_cost_usd", self.total_cost_usd)
+    def _apply_agentoutputwritten(self, p: dict) -> None:
+        # Agent has written its output events to domain streams
+        pass
 
-        elif et == "AgentSessionFailed":
-            self.status = SessionStatus.FAILED
-            self.last_successful_node = p.get("last_successful_node")
+    def _apply_agentsessioncompleted(self, p: dict) -> None:
+        self.status = SessionStatus.COMPLETED
+        self.total_llm_calls = p.get("total_llm_calls", self.total_llm_calls)
+        self.total_tokens = p.get("total_tokens_used", self.total_tokens)
+        self.total_cost_usd = p.get("total_cost_usd", self.total_cost_usd)
 
-        elif et == "AgentSessionRecovered":
-            self.status = SessionStatus.RECOVERED
-            self.recovered_from_session_id = p.get("recovered_from_session_id")
-            self.recovery_point = p.get("recovery_point")
+    def _apply_agentsessionfailed(self, p: dict) -> None:
+        self.status = SessionStatus.FAILED
+        self.last_successful_node = p.get("last_successful_node")
 
-    # ── Business rule assertions ──────────────────────────────────────────────
+    def _apply_agentsessionrecovered(self, p: dict) -> None:
+        self.status = SessionStatus.RECOVERED
+        self.recovered_from_session_id = p.get("recovered_from_session_id")
+        self.recovery_point = p.get("recovery_point")
+
+    # ── Business rule assertions ───────────────────────────────────────────────
 
     def assert_context_loaded(self) -> None:
         """
@@ -142,11 +154,11 @@ class AgentSessionAggregate:
             )
         if self.status == SessionStatus.COMPLETED:
             raise DomainError(
-                f"Session {self.session_id} is already completed. Cannot append more events."
+                f"Session {self.session_id} is already completed."
             )
         if self.status == SessionStatus.FAILED:
             raise DomainError(
-                f"Session {self.session_id} has failed. Cannot append more events."
+                f"Session {self.session_id} has failed."
             )
 
     def assert_model_version_current(self, model_version: str) -> None:

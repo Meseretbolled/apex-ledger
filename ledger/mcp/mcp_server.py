@@ -1,13 +1,4 @@
-"""
-ledger/mcp_server.py
-=====================
-FastMCP server wiring — registers all 8 tools and 6 resources.
 
-Run:
-    python ledger/mcp_server.py
-
-Or via Claude Desktop by pointing to this file.
-"""
 from __future__ import annotations
 import asyncio
 import os

@@ -1,5 +1,4 @@
 """
-ledger/mcp/tools.py
 ====================
 8 MCP tools for The Ledger.
 

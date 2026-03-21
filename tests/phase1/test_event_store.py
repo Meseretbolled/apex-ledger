@@ -1,14 +1,6 @@
-"""
-tests/phase1/test_event_store.py
-=================================
-Phase 1 gate tests — EventStore core.
-All must pass before starting Phase 2.
 
-Run: pytest tests/phase1/ -v
-"""
 import asyncio
 import pytest
-import pytest_asyncio
 
 from ledger.event_store import InMemoryEventStore, OptimisticConcurrencyError
 
@@ -58,22 +50,79 @@ async def test_append_wrong_version_raises():
 
 @pytest.mark.asyncio
 async def test_concurrent_double_append_exactly_one_succeeds():
-    """The critical OCC test: concurrent appends at same expected_version."""
+    """
+    The critical OCC test: two concurrent tasks race to append to the same
+    stream at the same expected_version.
+
+    Asserts:
+      - exactly ONE task succeeds
+      - the LOSER specifically raises OptimisticConcurrencyError
+      - the final stream length is exactly 4 events (3 base + 1 winner)
+      - the winning event is at position 3 (0-indexed)
+      - the stream version is 3 after the race
+    """
     store = InMemoryEventStore()
-    await store.append("s", [_ev("Base")], expected_version=-1)
 
-    results = []
-    async def attempt():
+    # Seed the stream with 3 events so expected_version=2
+    await store.append("loan-APEX-TEST", [_ev("ApplicationSubmitted")], expected_version=-1)
+    await store.append("loan-APEX-TEST", [_ev("DocumentUploadRequested")], expected_version=0)
+    await store.append("loan-APEX-TEST", [_ev("DocumentUploaded")], expected_version=1)
+
+    assert await store.stream_version("loan-APEX-TEST") == 2
+
+    # Two agents race simultaneously — both believe expected_version=2
+    successes = []
+    occ_errors = []
+    winning_positions = []
+
+    async def attempt(agent_name: str):
         try:
-            await store.append("s", [_ev("Concurrent")], expected_version=0)
-            results.append("success")
-        except OptimisticConcurrencyError:
-            results.append("occ")
+            positions = await store.append(
+                "loan-APEX-TEST",
+                [_ev("CreditAnalysisCompleted", agent=agent_name)],
+                expected_version=2,
+            )
+            successes.append(agent_name)
+            winning_positions.extend(positions)
+        except OptimisticConcurrencyError as e:
+            occ_errors.append((agent_name, e))
 
-    await asyncio.gather(attempt(), attempt())
-    assert results.count("success") == 1, "Exactly one concurrent append must succeed"
-    assert results.count("occ") == 1
-    assert await store.stream_version("s") == 1
+    await asyncio.gather(
+        attempt("credit-agent-A"),
+        attempt("credit-agent-B"),
+    )
+
+    # Exactly one wins, one raises OptimisticConcurrencyError
+    assert len(successes) == 1, \
+        f"Exactly one agent must succeed, got: {successes}"
+    assert len(occ_errors) == 1, \
+        f"Exactly one agent must raise OCC, got: {occ_errors}"
+
+    # The loser raised OptimisticConcurrencyError specifically (not any other error)
+    losing_agent, occ_exc = occ_errors[0]
+    assert isinstance(occ_exc, OptimisticConcurrencyError), \
+        "Loser must raise OptimisticConcurrencyError"
+    assert occ_exc.stream_id == "loan-APEX-TEST"
+    assert occ_exc.expected == 2
+
+    # The winning event is at position 3 (the 4th event, 0-indexed)
+    assert winning_positions == [3], \
+        f"Winning event must be at position 3, got: {winning_positions}"
+
+    # Final stream has exactly 4 events (3 base + 1 winner)
+    final_events = await store.load_stream("loan-APEX-TEST")
+    assert len(final_events) == 4, \
+        f"Stream must have exactly 4 events, got: {len(final_events)}"
+
+    # Stream version is now 3
+    assert await store.stream_version("loan-APEX-TEST") == 3, \
+        "Stream version must be 3 after race"
+
+    # The winning event's payload identifies the winner
+    winning_event = final_events[3]
+    assert winning_event["stream_position"] == 3
+    assert winning_event["event_type"] == "CreditAnalysisCompleted"
+    assert winning_event["payload"]["agent"] == successes[0]
 
 @pytest.mark.asyncio
 async def test_load_stream_returns_events_in_order():
@@ -123,6 +172,45 @@ async def test_append_multiple_events_in_one_call():
     assert positions == [0, 1, 2]
     assert await store.stream_version("s") == 2
 
+@pytest.mark.asyncio
+async def test_correlation_and_causation_ids_stored_in_metadata():
+    """
+    correlation_id and causation_id must be stored in event metadata.
+    This is required for causation chain audits.
+    """
+    store = InMemoryEventStore()
+    await store.append(
+        "loan-APEX-0001",
+        [_ev("ApplicationSubmitted", application_id="APEX-0001")],
+        expected_version=-1,
+        correlation_id="corr-abc123",
+        causation_id="caus-xyz789",
+    )
+    events = await store.load_stream("loan-APEX-0001")
+    assert len(events) == 1
+    meta = events[0]["metadata"]
+    assert meta.get("correlation_id") == "corr-abc123"
+    assert meta.get("causation_id") == "caus-xyz789"
+
+@pytest.mark.asyncio
+async def test_occ_error_has_correct_fields():
+    """
+    OptimisticConcurrencyError must expose stream_id, expected, and actual
+    for callers to inspect and retry.
+    """
+    store = InMemoryEventStore()
+    await store.append("s", [_ev("E1")], expected_version=-1)
+    try:
+        await store.append("s", [_ev("E2")], expected_version=5)
+        assert False, "Should have raised"
+    except OptimisticConcurrencyError as e:
+        assert e.stream_id == "s"
+        assert e.expected == 5
+        assert e.actual == 0
+        assert "s" in str(e)
+        assert "5" in str(e)
+        assert "0" in str(e)
+
 
 # ─── EVENT SCHEMA CONFORMANCE ─────────────────────────────────────────────────
 
@@ -131,9 +219,6 @@ async def test_all_seed_event_types_validate():
     """
     Loads seed_events.jsonl (produced by datagen/generate_all.py --validate-only)
     and verifies every event validates against EVENT_REGISTRY.
-
-    Run datagen first:
-        python datagen/generate_all.py --skip-db --skip-docs --validate-only
     """
     import json
     from pathlib import Path
