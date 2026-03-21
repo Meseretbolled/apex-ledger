@@ -3,7 +3,7 @@
 
 An event-sourced infrastructure where 5 LangGraph AI agents collaborate to process commercial loan applications. Every agent action, decision, and compliance check is recorded as an immutable event. The system is fully auditable, reproducible, and tamper-evident by design.
 
-![System Architecture](assets/week5.png)
+![System Architecture](assets/Week5.png)
 
 ---
 
