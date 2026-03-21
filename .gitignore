@@ -6,7 +6,6 @@ __pycache__/
 .venv/
 venv/
 documents/
-data/seed_events.jsonl
 *.egg-info/
 dist/
 .DS_Store
