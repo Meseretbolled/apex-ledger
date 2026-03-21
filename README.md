@@ -1,279 +1,276 @@
-# 🗺️ Brownfield Cartographer
+# The Ledger — Apex Financial Services
+## TRP1 Week 5 — Agentic Event-Sourced Loan Decisioning Platform
 
-> **Multi-agent codebase intelligence system for rapid FDE onboarding in production environments.**
-> Point it at any GitHub repo or local path. Get a living, queryable map of the system's architecture, data flows, and semantic structure in under 60 seconds.
+An event-sourced infrastructure where 5 LangGraph AI agents collaborate to process commercial loan applications. Every agent action, decision, and compliance check is recorded as an immutable event. The system is fully auditable, reproducible, and tamper-evident by design.
+
+![System Architecture](assets/week5.png)
+
+---
+
+## Overview
+
+The Ledger is a production-grade loan decisioning platform built on three foundational principles:
+
+**Event Sourcing** — the `events` table is the single source of truth. Every state change is an immutable append. No updates, no deletes. Any past state can be reconstructed by replaying the event stream.
+
+**Optimistic Concurrency Control** — agents write to separate aggregate streams and use PostgreSQL row-level locking to prevent double-writes. If two agents race to write the same stream position, exactly one wins. The other reloads and retries.
+
+**Gas Town Pattern** — every agent records its session start as the very first event before doing any work. If the agent crashes mid-pipeline, crash recovery replays the session stream and resumes from the last successful node — no work is lost and no work is duplicated.
 
 ---
 
 ## Quick Start
 
-```bash
-# 1. Clone the repo
-git clone https://github.com/Meseretbolled/brownfield-cartographer.git
-cd brownfield-cartographer
+### Prerequisites
+- Python 3.12+
+- PostgreSQL 16 (running on port 5433)
+- Gemini API key
 
-# 2. Create virtual environment and install
-uv sync
+### 1. Clone and install
+
+```bash
+git clone https://github.com/Meseretbolled/apex-ledger.git
+cd apex-ledger
+python -m venv .venv
 source .venv/bin/activate
-
-# 3. Run analysis on any repo
-cartographer analyze /path/to/repo
-
-# 4. Run analysis on a GitHub URL (auto-clones)
-cartographer analyze https://github.com/dbt-labs/jaffle_shop
-
-# 5. Launch interactive query interface
-cartographer query /path/to/repo
-
-# 6. Print summary of existing analysis
-cartographer summary /path/to/repo
+pip install -r requirements.txt
+pip install google-genai
 ```
 
----
-
-## Verify It Works
-
-Run these commands to confirm everything is working end-to-end:
+### 2. Set up environment
 
 ```bash
-# 1. Check the CLI is installed and responds
-cartographer --help
-
-# 2. Run against the included jaffle_shop artefacts (no cloning needed)
-cartographer query . --cartography-dir cartography-artifacts/jaffle_shop
-
-# 3. Inside the query interface, try:
-navigator> sources
-navigator> sinks
-navigator> blast_radius orders
-navigator> module schema
-navigator> quit
-
-# 4. Run a fresh analysis against jaffle_shop
-git clone https://github.com/dbt-labs/jaffle_shop /tmp/jaffle_shop
-cartographer analyze /tmp/jaffle_shop
-
-# 5. Inspect generated artefacts
-ls /tmp/jaffle_shop/.cartography/
-cat /tmp/jaffle_shop/.cartography/analysis_summary.md
+cp .env.example .env
 ```
 
----
+Edit `.env`:
+```
+GEMINI_API_KEY=your-gemini-key-here
+DATABASE_URL=postgresql://ledger_user:ledger123@127.0.0.1:5433/apex_ledger
+```
 
-## What It Does
-
-The Cartographer runs four agents in sequence against any codebase:
-
-| Agent | Role | Output |
-| --- | --- | --- |
-| **Surveyor** | Static AST analysis — module graph, PageRank, git velocity, dead code | `module_graph.json` |
-| **Hydrologist** | Data lineage — Python dataflow, SQL (sqlglot), YAML/DAG configs, notebooks | `lineage_graph.json` |
-| **Semanticist** | LLM purpose statements, doc drift detection, domain clustering, Day-One answers | `semanticist_trace.json` |
-| **Archivist** | Produces all final artefacts — CODEBASE.md, onboarding brief, audit log | `CODEBASE.md`, `onboarding_brief.md` |
-
-The **Navigator** agent provides an interactive query interface over the generated knowledge graph.
-
----
-
-## Commands
-
-### `analyze` — Full pipeline
+### 3. Set up PostgreSQL
 
 ```bash
-cartographer analyze <repo>
+sudo service postgresql start
 
-# Options:
-#   --output, -o        Custom output directory (default: <repo>/.cartography/)
-#   --incremental, -i   Only re-analyse files changed since last run
-#   --git-days          Days of git history for velocity (default: 30)
-
-# Examples:
-cartographer analyze /tmp/jaffle_shop
-cartographer analyze https://github.com/dbt-labs/jaffle_shop
-cartographer analyze /tmp/jaffle_shop --output ./my-output --git-days 60
-cartographer analyze /tmp/jaffle_shop --incremental
+sudo -u postgres psql << 'EOF'
+CREATE USER ledger_user WITH PASSWORD 'ledger123';
+CREATE DATABASE apex_ledger OWNER ledger_user;
+GRANT ALL PRIVILEGES ON DATABASE apex_ledger TO ledger_user;
+EOF
 ```
 
-### `query` — Interactive Navigator
+### 4. Generate seed data
 
 ```bash
-cartographer query <repo>
-
-# Inside the navigator:
-blast_radius <node>          # All downstream dependents
-lineage <dataset>            # Upstream sources of a dataset
-module <path>                # Full detail on a module
-sources                      # All data ingestion entry points
-sinks                        # All data output endpoints
-hubs                         # Top modules by PageRank
-quit                         # Exit
+python datagen/generate_all.py \
+  --db-url postgresql://ledger_user:ledger123@127.0.0.1:5433/apex_ledger \
+  --docs-dir ./documents \
+  --output-dir ./data \
+  --random-seed 42
 ```
 
-### `summary` — Quick summary
+This generates 80 companies, 400 financial documents, and 1,198 seed events across 29 applications.
+
+### 5. Run all tests
 
 ```bash
-cartographer summary <repo>
+pytest tests/ -v
 ```
 
----
-
-## Generated Artefacts
-
-Every analysis run produces these files in `.cartography/`:
-
-| File | Description |
-| --- | --- |
-| `module_graph.json` | Full module import graph with PageRank scores |
-| `lineage_graph.json` | Data lineage DAG (datasets + transformations) |
-| `analysis_summary.md` | Human-readable run summary |
-| `CODEBASE.md` | Living context file — inject into any AI coding agent |
-| `onboarding_brief.md` | Five FDE Day-One questions answered with evidence |
-| `cartography_trace.jsonl` | Audit log of every agent action |
+Expected: **69 passed, 13 skipped, 0 failed**
 
 ---
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    INPUT["📁 Repo Input\n(local path or GitHub URL)"]
+The system is organized into 8 layers, each building on the one below:
 
-    subgraph CORE["Core Infrastructure"]
-        MODELS["src/models/__init__.py\nPydantic Schemas\nModuleNode · DatasetNode\nTransformationNode · Edge"]
-        KG["src/graph/knowledge_graph.py\nKnowledgeGraph\nNetworkX DiGraph\nPageRank · BFS · SCC"]
-    end
-
-    subgraph ANALYZERS["Language Analyzers"]
-        TSA["src/analyzers/tree_sitter_analyzer.py\nMulti-language AST Parser\nPython · JS · YAML"]
-        SQL["src/analyzers/sql_lineage.py\nsqlglot SQL Parser\ndbt ref() · CTEs · JOINs"]
-        DAG["src/analyzers/dag_config_parser.py\nYAML/Config Parser\nAirflow DAGs · dbt schema.yml"]
-    end
-
-    subgraph AGENTS["Analysis Agents"]
-        SUR["🔭 Surveyor\nsrc/agents/surveyor.py\nModule graph · PageRank\nGit velocity · Dead code"]
-        HYD["💧 Hydrologist\nsrc/agents/hydrologist.py\nData lineage DAG\nblast_radius · sources/sinks"]
-        SEM["🧠 Semanticist\nsrc/agents/semanticist.py\nLLM purpose statements\nDoc drift · Domain clusters\nDay-One answers"]
-        ARC["🗄️ Archivist\nsrc/agents/archivist.py\nCODEBASE.md\nonboarding_brief.md\ncartography_trace.jsonl"]
-    end
-
-    subgraph QUERY["Query Interface"]
-        NAV["🧭 Navigator\nsrc/agents/navigator.py\nfind_implementation()\ntrace_lineage()\nblast_radius()\nexplain_module()"]
-    end
-
-    subgraph OUTPUTS["Generated Artefacts"]
-        MG["module_graph.json"]
-        LG["lineage_graph.json"]
-        CM["CODEBASE.md"]
-        OB["onboarding_brief.md"]
-        TR["cartography_trace.jsonl"]
-    end
-
-    CLI["src/cli.py\ncartographer analyze\ncartographer query\ncartographer summary"]
-    ORCH["src/orchestrator.py\nPipeline orchestration\nIncremental mode\nError isolation"]
-
-    INPUT --> CLI
-    CLI --> ORCH
-    ORCH --> SUR
-    ORCH --> HYD
-    TSA --> SUR
-    SQL --> HYD
-    DAG --> HYD
-    SUR --> KG
-    HYD --> KG
-    KG --> MODELS
-    SUR --> ARC
-    HYD --> ARC
-    KG --> SEM
-    SEM --> ARC
-    ARC --> CM
-    ARC --> OB
-    ARC --> TR
-    SUR --> MG
-    HYD --> LG
-    KG --> NAV
-    NAV --> QUERY
-
-    style CORE fill:#1e3a5f,color:#fff
-    style ANALYZERS fill:#1a4731,color:#fff
-    style AGENTS fill:#4a1942,color:#fff
-    style QUERY fill:#4a3000,color:#fff
-    style OUTPUTS fill:#3a1a00,color:#fff
 ```
+Loan application
+       ↓
+Command handler  (load → validate → append with OCC)
+       ↓
+PostgreSQL event store  (OCC · outbox · global_position · upcasters)
+       ↓
+5 aggregate streams  (loan · credit · fraud · compliance · agent)
+       ↓
+5 LangGraph agents  (Document · Credit · Fraud · Compliance · Orchestrator)
+       ↓
+Projection daemon  (polls load_all() · checkpoints · <500ms SLO)
+       ↓
+3 read models  (ApplicationSummary · AgentPerformance · ComplianceAudit)
+       ↓
+MCP server  (8 tools · 6 resources · FastMCP)
+```
+
+### Event Store
+
+The append-only PostgreSQL event store is the heart of the system. Key design decisions:
+
+The `events` table uses `global_position BIGINT GENERATED ALWAYS AS IDENTITY` — a monotonically increasing counter generated by PostgreSQL, never by application code. This guarantees no gaps and no conflicts across concurrent writers.
+
+The `event_streams` table holds `current_version` which is the OCC lock target. Every `append()` call does `SELECT ... FOR UPDATE` on this row before writing, which serialises concurrent appends at the database level.
+
+The `outbox` table receives one row per event in the same transaction as the event insert. This implements the Transactional Outbox Pattern — if the process crashes between the DB commit and any external publish, the outbox row survives and the event will be delivered.
+
+### 7 Aggregate Streams
+
+| Stream | Aggregate | Purpose |
+|---|---|---|
+| `loan-{id}` | LoanApplication | Full 16-state lifecycle machine |
+| `docpkg-{id}` | DocumentPackage | Document extraction pipeline |
+| `agent-{type}-{session}` | AgentSession | Per-agent Gas Town tracking |
+| `credit-{id}` | CreditRecord | Credit analysis results |
+| `fraud-{id}` | FraudScreening | Fraud detection results |
+| `compliance-{id}` | ComplianceRecord | 6 regulatory rule results |
+| `audit-{id}` | AuditLedger | SHA-256 hash chain integrity |
+
+Separate streams per agent prevent OCC contention. Two credit agents racing only compete for the `credit-{id}` lock, not the entire application stream.
+
+### 5 LangGraph Agents
+
+| Agent | LLM | Nodes | Output events |
+|---|---|---|---|
+| DocumentProcessingAgent | Gemini 2.0 Flash | 6 | ExtractionCompleted, PackageReadyForAnalysis |
+| CreditAnalysisAgent | Gemini 2.0 Flash | 7 | CreditAnalysisCompleted |
+| FraudDetectionAgent | Gemini 2.0 Flash | 5 | FraudScreeningCompleted |
+| ComplianceAgent | None (deterministic) | 9 | ComplianceCheckCompleted |
+| DecisionOrchestratorAgent | Gemini 2.0 Flash | 7 | DecisionGenerated, ApplicationApproved/Declined |
+
+### 3 Projections
+
+| Projection | SLO | Answers |
+|---|---|---|
+| ApplicationSummary | <500ms | What is the current state of application X? |
+| AgentPerformance | <2s | What is agent Y's average confidence and cost? |
+| ComplianceAudit | <2s | What was the compliance status of X at time T? |
+
+### Integrity Layer
+
+**AuditChain** — every event is linked to the previous event's SHA-256 hash. If any stored event is modified, the chain breaks at that position. `verify_stream(stream_id)` returns `is_valid=True` only if the entire chain is intact.
+
+**Gas Town recovery** — `reconstruct_agent_context(store, agent_type, application_id)` finds the most recent session stream, replays all events, and returns the context needed to resume from the last successful node.
 
 ---
 
 ## Project Structure
 
 ```
-brownfield-cartographer/
-├── src/
-│   ├── cli.py                          # Entry point: analyze, query, summary
-│   ├── orchestrator.py                 # Pipeline wiring + incremental mode
-│   ├── models/__init__.py              # Pydantic schemas (all node/edge types)
-│   ├── graph/knowledge_graph.py        # NetworkX wrapper + serialization
-│   ├── analyzers/
-│   │   ├── tree_sitter_analyzer.py     # Multi-language AST parsing
-│   │   ├── sql_lineage.py              # sqlglot SQL dependency extraction
-│   │   └── dag_config_parser.py        # Airflow/dbt YAML config parsing
-│   └── agents/
-│       ├── surveyor.py                 # Module graph, PageRank, git velocity
-│       ├── hydrologist.py              # Data lineage graph
-│       ├── semanticist.py              # LLM purpose statements, doc drift
-│       ├── archivist.py                # CODEBASE.md, onboarding brief
-│       └── navigator.py               # Interactive query agent
-├── cartography-artifacts/
-│   └── jaffle_shop/                    # Pre-generated artefacts (jaffle_shop)
-│       ├── module_graph.json
-│       ├── lineage_graph.json
-│       └── analysis_summary.md
-├── pyproject.toml
-└── README.md
+apex-ledger/
+├── schema.sql                              # All PostgreSQL tables and indexes
+├── DOMAIN_NOTES.md                         # 6 domain questions answered
+├── DESIGN.md                               # Architecture decisions (6 sections)
+├── ledger/
+│   ├── event_store.py                      # EventStore + InMemoryEventStore
+│   ├── upcasters.py                        # 2 event upcasters (v1 → v2)
+│   ├── schema/events.py                    # 45 event types
+│   ├── registry/client.py                  # Applicant registry queries
+│   ├── domain/aggregates/
+│   │   ├── loan_application.py             # 16-state state machine + 6 assertions
+│   │   └── agent_session.py                # Gas Town pattern enforcement
+│   ├── agents/
+│   │   ├── base_agent.py                   # BaseApexAgent (Gemini, OCC, Gas Town)
+│   │   └── stub_agents.py                  # 4 agent implementations
+│   ├── commands/handlers.py                # Command handlers
+│   ├── projections/
+│   │   ├── daemon.py                       # ProjectionDaemon
+│   │   ├── application_summary.py          # Current state read model
+│   │   ├── agent_performance.py            # Per-agent metrics
+│   │   └── compliance_audit.py             # Temporal compliance snapshots
+│   ├── integrity/
+│   │   ├── audit_chain.py                  # SHA-256 hash chain
+│   │   └── gas_town.py                     # Crash recovery
+│   └── mcp/
+│       ├── tools.py                        # 8 MCP tools
+│       └── resources.py                    # 6 MCP resources
+├── datagen/                                # Data generator (80 companies, 1,198 events)
+└── tests/
+    ├── phase1/test_event_store.py          # 11 tests — EventStore
+    ├── phase2/test_aggregates.py           # 16 tests — Aggregates
+    ├── phase3/test_agents.py               # 17 tests — Agents + REGULATIONS
+    ├── phase4/test_projections_and_integrity.py  # 15 tests — Projections
+    └── test_schema_and_generator.py        # 10 tests — Schema
 ```
 
 ---
 
-## Supported Languages & Patterns
-
-| Language | What's Extracted |
-| --- | --- |
-| **Python** | Imports, functions, classes, pandas/PySpark/SQLAlchemy dataflow |
-| **SQL / dbt** | Table dependencies, CTEs, JOINs, `ref()` calls |
-| **YAML** | Airflow DAG topology, dbt `schema.yml` sources and models |
-| **Jupyter** | `.ipynb` cell source — read/write data references |
-| **JavaScript/TypeScript** | AST parsing (imports, exports) |
-
----
-
-## Environment Variables
+## Running Tests
 
 ```bash
-# LLM model selection (Semanticist agent)
-ANTHROPIC_API_KEY=sk-ant-...          # Required for LLM features
-CARTOGRAPHER_FAST_MODEL=claude-haiku-4-5-20251001   # Bulk summaries
-CARTOGRAPHER_STRONG_MODEL=claude-haiku-4-5-20251001 # Synthesis tasks
-CARTOGRAPHER_DOMAIN_K=6               # Number of domain clusters
+# All tests
+pytest tests/ -v
+
+# Phase 1 only (EventStore — primary correctness gate)
+pytest tests/phase1/test_event_store.py -v
+
+# Phase 2 — aggregates and state machine
+pytest tests/phase2/test_aggregates.py -v
+
+# Phase 3 — agents and REGULATIONS dict
+pytest tests/phase3/test_agents.py -v
+
+# Phase 4 — projections, upcasters, audit chain, Gas Town
+pytest tests/phase4/test_projections_and_integrity.py -v
 ```
 
-> LLM features are **optional**. All static analysis (Surveyor + Hydrologist) works without any API key.
+### Test results — interim submission
+
+| Suite | Tests | Result |
+|---|---|---|
+| Phase 1 — EventStore | 11 | ✅ All passing |
+| Phase 2 — Aggregates | 16 | ✅ All passing |
+| Phase 3 — Agents | 17 | ✅ All passing |
+| Phase 4 — Projections + Integrity | 15 | ✅ All passing |
+| Schema + Generator | 10 | ✅ All passing |
+| Narrative tests | 5 | ⏭ In progress |
+| PostgreSQL integration | 8 | ⏭ Requires live DB |
 
 ---
 
-## Target Codebases Tested
+## Concurrency — OCC Double-Decision Test
 
-| Repo | Modules | Datasets | Transformations |
-| --- | --- | --- | --- |
-| [dbt jaffle_shop](https://github.com/dbt-labs/jaffle_shop) | 3 | 9 | 5 |
+The key correctness test verifies that two concurrent agents cannot both write to the same stream position:
+
+```bash
+pytest tests/phase1/test_event_store.py::test_concurrent_double_append_exactly_one_succeeds -v
+```
+
+Two asyncio tasks simultaneously attempt `append("loan-APEX-TEST", ..., expected_version=3)`. The `SELECT ... FOR UPDATE` lock ensures exactly one acquires the lock, writes successfully, and updates `current_version=4`. The second reads `current_version=4`, sees `4 != 3`, and raises `OptimisticConcurrencyError`. It must reload the stream and retry with `expected_version=4`.
 
 ---
 
-## Dependencies
+## Compliance Rules
 
-Key dependencies (see `pyproject.toml` for full list):
+The ComplianceAgent evaluates 6 deterministic rules with no LLM in the decision path:
 
-- `tree-sitter` — multi-language AST parsing
-- `sqlglot` — SQL parsing and lineage extraction
-- `networkx` — graph construction, PageRank, BFS
-- `pydantic` — schema validation
-- `typer` + `rich` — CLI and terminal output
-- `gitpython` — git history analysis
-- `anthropic` — LLM calls (optional)
+| Rule | Name | Hard Block |
+|---|---|---|
+| REG-001 | Bank Secrecy Act (BSA) | No |
+| REG-002 | OFAC Sanctions Screening | Yes |
+| REG-003 | Jurisdiction Eligibility (MT blocked) | Yes |
+| REG-004 | Legal Entity Type Eligibility | No |
+| REG-005 | Minimum Operating History (2 years) | Yes |
+| REG-006 | CRA Community Reinvestment | No (noted) |
+
+Hard block rules immediately append `ApplicationDeclined` and stop the pipeline without calling `DecisionRequested`.
+
+---
+
+## Implementation Status
+
+| Phase | Component | Status |
+|---|---|---|
+| 1a | EventStore — 5 methods, OCC, outbox, JSON codec | ✅ Complete |
+| 1b | ApplicantRegistryClient — 4 SQL queries | ✅ Complete |
+| 2 | LoanApplicationAggregate — 16 states, 6 assertions | ✅ Complete |
+| 2 | AgentSessionAggregate — Gas Town pattern | ✅ Complete |
+| 2 | Command handlers — submit + credit completed | ✅ Complete |
+| 3 | All 4 stub agents — fully implemented | ✅ Complete |
+| 4 | ProjectionDaemon + 3 projections | ✅ Complete |
+| 4 | Upcasters — CreditAnalysisCompleted + DecisionGenerated v1→v2 | ✅ Complete |
+| 4 | AuditChain — SHA-256 hash chain verification | ✅ Complete |
+| 4 | Gas Town crash recovery | ✅ Complete |
+| 5 | MCP server — 8 tools + 6 resources | ✅ Complete |
+| Final | Narrative tests NARR-01 through NARR-05 | 🔄 In progress |
