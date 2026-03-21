@@ -256,7 +256,7 @@ async def handle_credit_analysis_completed(
     await store.append(
         stream_id=f"loan-{cmd.application_id}",
         events=[fraud_event.to_dict()],
-        expected_version=app.version,
+        expected_version=app.version - 1,
         correlation_id=corr_id,
         causation_id=cmd.causation_id,
     )
@@ -323,7 +323,7 @@ async def handle_fraud_screening_completed(
     await store.append(
         stream_id=f"loan-{cmd.application_id}",
         events=[compliance_requested],
-        expected_version=app.version,
+        expected_version=app.version - 1,
         correlation_id=corr_id,
         causation_id=cmd.causation_id,
     )
@@ -399,7 +399,7 @@ async def handle_human_review_completed(
     await store.append(
         stream_id=f"loan-{cmd.application_id}",
         events=[review_completed, outcome_event],
-        expected_version=app.version,
+        expected_version=app.version - 1,
         correlation_id=corr_id,
         causation_id=cmd.causation_id,
     )
