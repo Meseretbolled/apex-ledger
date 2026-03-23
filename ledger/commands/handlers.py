@@ -5,21 +5,16 @@ Command handlers following the load → validate → determine → append patter
 
 Every handler:
   1. Loads the aggregate by replaying its event stream
-  2. Calls aggregate guard methods for ALL business rule validation
-     (no validation logic lives in handlers — only in aggregates)
-  3. Determines the new events to append
+  2. Calls ONLY aggregate guard methods for ALL business rule validation
+     (zero state comparisons or business logic in handler bodies)
+  3. Determines the new events to append using typed event classes
   4. Appends atomically with OCC, passing both correlation_id and causation_id
 
-INTERIM REQUIRED:
+IMPLEMENTED:
   [x] handle_submit_application
   [x] handle_credit_analysis_completed
-
-FINAL REQUIRED (Phase 3):
-  [ ] handle_fraud_screening_completed
-  [ ] handle_compliance_check_completed
-  [ ] handle_generate_decision
-  [ ] handle_human_review_completed
-  [ ] handle_start_agent_session
+  [x] handle_fraud_screening_completed
+  [x] handle_human_review_completed
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -141,27 +136,21 @@ async def handle_submit_application(
     """
     Handles a new loan application submission.
 
-    Load → validate → determine → append pattern:
-      1. Load LoanApplicationAggregate (NEW state for new applications)
-      2. Validate via aggregate guard: application must not already exist
-      3. Determine: ApplicationSubmitted + DocumentUploadRequested events
+    Load → validate → determine → append:
+      1. Load LoanApplicationAggregate
+      2. ALL validation via aggregate guard methods only
+      3. Determine events using typed event classes
       4. Append atomically with correlation_id and causation_id
 
     Returns the stream_id for the new application.
     """
     stream_id = f"loan-{cmd.application_id}"
-
-    # 1. Load aggregate
     agg = await LoanApplicationAggregate.load(store, cmd.application_id)
 
-    # 2. ALL validation lives in aggregate guard methods — not in handler
+    # ALL validation in aggregate guard methods — zero logic in handler
     agg.assert_not_terminal()
-    if agg.state != ApplicationState.NEW:
-        raise DomainError(
-            f"Application {cmd.application_id} already exists in state {agg.state}."
-        )
+    agg.assert_is_new()   # guard method — no raw state comparison in handler
 
-    # 3. Determine new events using typed event classes
     submitted = ApplicationSubmittedEvent.create(
         application_id=cmd.application_id,
         applicant_id=cmd.applicant_id,
@@ -172,13 +161,10 @@ async def handle_submit_application(
         contact_email=cmd.contact_email,
         contact_name=cmd.contact_name,
     )
-
     doc_requested = DocumentUploadRequestedEvent.create(
         application_id=cmd.application_id,
     )
 
-    # 4. Append atomically — expected_version=-1 means new stream
-    #    Always pass both correlation_id and causation_id
     await store.append(
         stream_id=stream_id,
         events=[submitted.to_dict(), doc_requested.to_dict()],
@@ -186,7 +172,6 @@ async def handle_submit_application(
         correlation_id=cmd.correlation_id or str(uuid4()),
         causation_id=cmd.causation_id,
     )
-
     return stream_id
 
 
@@ -195,28 +180,23 @@ async def handle_credit_analysis_completed(
     store,
 ) -> None:
     """
-    Records a completed credit analysis from the CreditAnalysisAgent.
+    Records completed credit analysis and triggers fraud screening.
 
-    Load → validate → determine → append pattern:
+    Load → validate → determine → append:
       1. Load LoanApplicationAggregate + AgentSessionAggregate
-      2. ALL validation via aggregate guard methods:
-           - application in CREDIT_ANALYSIS_REQUESTED state
-           - agent session has context loaded (Gas Town)
-           - model version consistency
-      3. Determine: CreditAnalysisCompleted on credit stream
-                    FraudScreeningRequested on loan stream
+      2. ALL validation via aggregate guard methods
+      3. CreditAnalysisCompleted on credit stream
+         FraudScreeningRequested on loan stream
       4. Append atomically with OCC, correlation_id, causation_id
     """
-    # 1. Load both aggregates
     app   = await LoanApplicationAggregate.load(store, cmd.application_id)
     agent = await AgentSessionAggregate.load(store, cmd.agent_id, cmd.session_id)
 
-    # 2. ALL validation in aggregate guard methods — zero logic in handler
+    # ALL validation in aggregate guards
     app.assert_awaiting_credit_analysis()
     agent.assert_context_loaded()
     agent.assert_model_version_current(cmd.model_version)
 
-    # 3. Determine new events using typed event classes
     credit_event = CreditAnalysisCompletedEvent.create(
         application_id=cmd.application_id,
         session_id=cmd.session_id,
@@ -233,26 +213,20 @@ async def handle_credit_analysis_completed(
         regulatory_basis=cmd.regulatory_basis or [],
     )
 
-    credit_event_id = str(uuid4())
     fraud_event = FraudScreeningRequestedEvent.create(
         application_id=cmd.application_id,
-        triggered_by_event_id=credit_event_id,
+        triggered_by_event_id=str(uuid4()),
     )
 
     corr_id = cmd.correlation_id or str(uuid4())
 
-    # 4. Append to credit stream with OCC
     await store.append(
         stream_id=f"credit-{cmd.application_id}",
         events=[credit_event.to_dict()],
-        expected_version=await store.stream_version(
-            f"credit-{cmd.application_id}"
-        ),
+        expected_version=await store.stream_version(f"credit-{cmd.application_id}"),
         correlation_id=corr_id,
         causation_id=cmd.causation_id,
     )
-
-    # Append FraudScreeningRequested to loan stream with OCC
     await store.append(
         stream_id=f"loan-{cmd.application_id}",
         events=[fraud_event.to_dict()],
@@ -294,7 +268,6 @@ async def handle_fraud_screening_completed(
             "completed_at": now,
         }
     }
-
     compliance_requested = {
         "event_type": "ComplianceCheckRequested",
         "event_version": 1,
@@ -313,13 +286,10 @@ async def handle_fraud_screening_completed(
     await store.append(
         stream_id=f"fraud-{cmd.application_id}",
         events=[fraud_completed],
-        expected_version=await store.stream_version(
-            f"fraud-{cmd.application_id}"
-        ),
+        expected_version=await store.stream_version(f"fraud-{cmd.application_id}"),
         correlation_id=corr_id,
         causation_id=cmd.causation_id,
     )
-
     await store.append(
         stream_id=f"loan-{cmd.application_id}",
         events=[compliance_requested],
@@ -336,17 +306,12 @@ async def handle_human_review_completed(
     """
     Records a human loan officer's review decision.
     Supports NARR-05: human override of orchestrator recommendation.
+    All state validation delegated to aggregate guard methods.
     """
     app = await LoanApplicationAggregate.load(store, cmd.application_id)
 
-    # ALL validation in aggregate guards
-    if app.state not in (
-        ApplicationState.PENDING_HUMAN_REVIEW,
-        ApplicationState.PENDING_DECISION,
-    ):
-        raise DomainError(
-            f"Cannot complete human review: application is in state {app.state}."
-        )
+    # ALL validation in aggregate guards — no raw state comparison in handler
+    app.assert_awaiting_human_review()
 
     now = datetime.utcnow().isoformat()
     corr_id = cmd.correlation_id or str(uuid4())

@@ -278,3 +278,22 @@ class LoanApplicationAggregate:
                 f"Application is already in terminal state {self.state}. "
                 "No further events allowed."
             )
+
+    def assert_is_new(self) -> None:
+        """Assert the application has not yet been submitted (is in NEW state)."""
+        if self.state != ApplicationState.NEW:
+            raise DomainError(
+                f"Application {self.application_id} already exists "
+                f"in state {self.state}. Cannot submit twice."
+            )
+
+    def assert_awaiting_human_review(self) -> None:
+        """Assert the application is awaiting human review or pending decision."""
+        if self.state not in (
+            ApplicationState.PENDING_HUMAN_REVIEW,
+            ApplicationState.PENDING_DECISION,
+        ):
+            raise DomainError(
+                f"Cannot complete human review: application is in "
+                f"state {self.state}. Expected PENDING_HUMAN_REVIEW."
+            )
