@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./ledger/agents/graph.py:graph"
+  },
+  "env": ".env"
+}
