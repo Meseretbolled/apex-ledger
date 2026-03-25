@@ -11,6 +11,8 @@ try:
 except ModuleNotFoundError:
     asyncpg = None
 
+from ledger.upcasters import UpcasterRegistry
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EXCEPTIONS
@@ -23,9 +25,7 @@ class OptimisticConcurrencyError(Exception):
         self.stream_id = stream_id
         self.expected = expected
         self.actual = actual
-        super().__init__(
-            f"OCC on '{stream_id}': expected v{expected}, actual v{actual}"
-        )
+        super().__init__(f"OCC on '{stream_id}': expected v{expected}, actual v{actual}")
 
 
 class StreamNotFoundError(Exception):
@@ -366,37 +366,6 @@ class AgentNodeExecutedEvent(BaseEvent):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UPCASTER REGISTRY
-# ─────────────────────────────────────────────────────────────────────────────
-
-class UpcasterRegistry:
-    """
-    Transforms old event versions to current versions on load.
-    """
-
-    def __init__(self):
-        self._upcasters: dict[str, dict[int, callable]] = {}
-
-    def upcaster(self, event_type: str, from_version: int, to_version: int):
-        def decorator(fn):
-            self._upcasters.setdefault(event_type, {})[from_version] = fn
-            return fn
-        return decorator
-
-    def upcast(self, event: dict) -> dict:
-        et = event["event_type"]
-        v = event.get("event_version", 1)
-        chain = self._upcasters.get(et, {})
-
-        while v in chain:
-            event["payload"] = chain[v](dict(event["payload"]))
-            v += 1
-            event["event_version"] = v
-
-        return event
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # EVENT STORE — PostgreSQL
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -478,9 +447,6 @@ class EventStore:
             }
 
     async def stream_metadata(self, stream_id: str) -> StreamMetadata | None:
-        """
-        Typed variant kept for backward compatibility.
-        """
         meta = await self.get_stream_metadata(stream_id)
         if not meta:
             return None
@@ -509,7 +475,7 @@ class EventStore:
         Returns stream positions.
         """
         event_dicts = [
-            e.to_dict() if isinstance(e, BaseEvent) else e
+            e.to_dict() if hasattr(e, "to_dict") else e
             for e in events
         ]
 
@@ -648,12 +614,17 @@ class EventStore:
         from_global_position: int = 0,
         event_types: list[str] | None = None,
         batch_size: int = 500,
+        from_position: int | None = None,
     ) -> AsyncGenerator[dict, None]:
         """
         Async generator yielding all events in global_position order.
+
+        Supports both:
+        - from_global_position (preferred)
+        - from_position (legacy compatibility)
         """
         async with self._pool.acquire() as conn:
-            pos = from_global_position
+            pos = from_position if from_position is not None else from_global_position
 
             while True:
                 if event_types:
@@ -805,7 +776,7 @@ class InMemoryEventStore:
         metadata: dict | None = None,
     ) -> list[int]:
         event_dicts = [
-            e.to_dict() if isinstance(e, BaseEvent) else e
+            e.to_dict() if hasattr(e, "to_dict") else e
             for e in events
         ]
 
@@ -887,7 +858,18 @@ class InMemoryEventStore:
         from_global_position: int = 0,
         event_types: list[str] | None = None,
         batch_size: int = 500,
+        from_position: int | None = None,
     ):
+        """
+        Backward-compatible async generator yielding all events in global order.
+
+        Supports both:
+        - from_global_position (new)
+        - from_position (legacy tests)
+        """
+        if from_position is not None:
+            from_global_position = from_position
+
         count = 0
         for e in self._global:
             if e["global_position"] > from_global_position:
