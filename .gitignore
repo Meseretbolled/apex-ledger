@@ -14,3 +14,6 @@ dist/
 .langgraph_api/
 .langgraph_api/
 .langgraph_api/
+*.pyy
+*.swp
+*.sh
