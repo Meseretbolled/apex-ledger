@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import AsyncGenerator, Any
 from uuid import UUID, uuid4
-import asyncpg
+try:
+    import asyncpg
+except ModuleNotFoundError:  # optional for in-memory/unit tests
+    asyncpg = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -346,7 +349,7 @@ class EventStore:
     def __init__(self, db_url: str, upcaster_registry: UpcasterRegistry | None = None):
         self.db_url = db_url
         self.upcasters = upcaster_registry
-        self._pool: asyncpg.Pool | None = None
+        self._pool = None
 
     async def _init_connection(self, conn):
         """Register JSON/JSONB codecs so asyncpg returns dicts instead of strings."""
@@ -356,6 +359,8 @@ class EventStore:
             'json', encoder=json.dumps, decoder=json.loads, schema='pg_catalog')
 
     async def connect(self) -> None:
+        if asyncpg is None:
+            raise RuntimeError("asyncpg is not installed. Install requirements.txt to use PostgreSQL EventStore.")
         self._pool = await asyncpg.create_pool(
             self.db_url, min_size=2, max_size=10, init=self._init_connection)
 

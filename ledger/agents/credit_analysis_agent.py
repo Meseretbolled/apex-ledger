@@ -40,7 +40,10 @@ from decimal import Decimal
 from typing import TypedDict, Annotated
 from uuid import uuid4
 
-from langgraph.graph import StateGraph, END
+try:
+    from langgraph.graph import StateGraph, END
+except ModuleNotFoundError:  # lightweight fallback for unit tests
+    from ledger.agents._graph_fallback import StateGraph, END
 
 from ledger.agents.base_agent import BaseApexAgent
 from ledger.schema.events import (

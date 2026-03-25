@@ -16,13 +16,23 @@ from uuid import uuid4
 from dotenv import load_dotenv
 load_dotenv()
 
-import openai
-from langgraph.graph import StateGraph, END
+try:
+    import openai
+except ModuleNotFoundError:  # optional in unit tests
+    openai = None
+
+try:
+    from langgraph.graph import StateGraph, END
+except ModuleNotFoundError:  # lightweight fallback for unit tests
+    from ledger.agents._graph_fallback import StateGraph, END
 
 # Configure OpenRouter client once at module load
-client_openrouter = openai.OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
+client_openrouter = (
+    openai.OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+    )
+    if openai is not None else None
 )
 
 LANGGRAPH_VERSION = "1.0.0"

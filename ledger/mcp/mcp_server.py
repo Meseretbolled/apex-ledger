@@ -4,7 +4,10 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
-import asyncpg
+try:
+    import asyncpg
+except ModuleNotFoundError:
+    asyncpg = None
 from dotenv import load_dotenv
 
 load_dotenv()

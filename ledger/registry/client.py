@@ -9,7 +9,10 @@ The Applicant Registry is the external CRM — seeded by datagen/generate_all.py
 """
 from __future__ import annotations
 from dataclasses import dataclass
-import asyncpg
+try:
+    import asyncpg
+except ModuleNotFoundError:
+    asyncpg = None
 
 @dataclass
 class CompanyProfile:

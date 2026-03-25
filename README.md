@@ -535,10 +535,51 @@ apex-ledger/
 | 5 | ComplianceAgent — deterministic, no LLM | ✅ Complete |
 | 5 | DecisionOrchestratorAgent — full LangGraph | ✅ Complete |
 | 6 | generate_regulatory_package() | ✅ Complete |
-| 6 | Narrative demos NARR-01 to NARR-05 | 🔄 In progress |
-| Bonus | run_what_if() counterfactual projector | 🔄 In progress |
+| 6 | Narrative demos NARR-01 to NARR-05 | Completed |
+| Bonus | run_what_if() counterfactual projector | 🔄 completed |
 
 ---
+##  Coverage
+
+### 1. Event Store Schema & Database Foundation
+Implemented in:
+- `schema.sql`
+- `ledger/event_store.py`
+
+### 2. EventStore Class — Append & Optimistic Concurrency
+Implemented in:
+- `ledger/event_store.py`
+- concurrency tests in `tests/phase1/`
+
+### 3. EventStore Class — Load & Replay
+Implemented in:
+- `ledger/event_store.py`
+- aggregate replay in `ledger/domain/aggregates/`
+
+### 4. Aggregate Domain Logic & Business Rule Enforcement
+Implemented in:
+- `ledger/domain/aggregates/loan_application.py`
+- `ledger/domain/aggregates/agent_session.py`
+
+### 5. Projection Daemon & CQRS Read Models
+Implemented in:
+- `ledger/projections/daemon.py`
+- `ledger/projections/application_summary.py`
+
+### 6. Upcaster Registry & Cryptographic Integrity
+Implemented in:
+- `ledger/upcasters.py`
+- `ledger/integrity/audit_chain.py`
+
+### 7. Gas Town Agent Memory Reconstruction
+Implemented in:
+- `ledger/integrity/gas_town.py`
+
+### 8. MCP Server — Tools, Resources & LLM-Consumability
+Implemented in:
+- `ledger/mcp/tools.py`
+- `ledger/mcp/resources.py`
+- `ledger/mcp/mcp_server.py`
 
 ## The Enterprise Case
 
