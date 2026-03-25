@@ -1,39 +1,88 @@
-"""
-ledger/upcasters.py — UpcasterRegistry
-=======================================
-COMPLETION STATUS: COMPLETE
-
-Upcasters transform old event versions to the current version ON READ.
-They NEVER write to the events table. Immutability is non-negotiable.
-
-IMPLEMENTED:
-  CreditAnalysisCompleted v1 → v2: add regulatory_basis=[] if absent
-  DecisionGenerated v1 → v2: add model_versions={} if absent
-"""
 from __future__ import annotations
+
+from typing import Any, Dict, Tuple
 
 
 class UpcasterRegistry:
-    """Apply on load_stream() — never on append()."""
+    """
+    Central registry for event upcasting.
 
-    def upcast(self, event: dict) -> dict:
-        et = event.get("event_type")
-        ver = event.get("event_version", 1)
+    Responsibilities:
+    - Upgrade older event versions to the latest version
+    - Apply inference logic when possible (not just default None)
+    - Ensure backward compatibility for stored events
+    - Keep read-path transparent (EventStore calls this automatically)
 
-        if et == "CreditAnalysisCompleted" and ver < 2:
-            event = dict(event)
-            event["event_version"] = 2
-            p = dict(event.get("payload", {}))
-            p.setdefault("regulatory_basis", [])
-            p.setdefault("model_deployment_id", "legacy-pre-2026")
-            event["payload"] = p
+    Returns:
+        (payload, new_version, metadata)
+    """
 
-        if et == "DecisionGenerated" and ver < 2:
-            event = dict(event)
-            event["event_version"] = 2
-            p = dict(event.get("payload", {}))
-            p.setdefault("model_versions", {})
-            p.setdefault("contributing_sessions", [])
-            event["payload"] = p
+    def upcast(
+        self,
+        event_type: str,
+        event_version: int,
+        payload: Dict[str, Any],
+        metadata: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], int, Dict[str, Any]]:
+        payload = dict(payload or {})
+        metadata = dict(metadata or {})
 
-        return event
+        # =========================================================
+        # ComplianceChecked v1 → v2
+        # Add regulatory_basis (infer if possible)
+        # =========================================================
+        if event_type == "ComplianceChecked" and event_version == 1:
+            inferred_basis = metadata.get("regulatory_basis_hint")
+
+            # inference logic (NOT just None)
+            if not inferred_basis:
+                if payload.get("country") == "US":
+                    inferred_basis = "US_REGULATION"
+                elif payload.get("country") == "EU":
+                    inferred_basis = "EU_REGULATION"
+                else:
+                    inferred_basis = None
+
+            payload.setdefault("regulatory_basis", inferred_basis)
+            return payload, 2, metadata
+
+        # =========================================================
+        # DecisionGenerated v1 → v2
+        # Add model_versions (infer from metadata if available)
+        # =========================================================
+        if event_type == "DecisionGenerated" and event_version == 1:
+            inferred_models = metadata.get("contributing_model_versions")
+
+            if not inferred_models:
+                # fallback inference
+                inferred_models = {
+                    "credit_model": metadata.get("model_version", "unknown")
+                }
+
+            payload.setdefault("model_versions", inferred_models)
+            return payload, 2, metadata
+
+        # =========================================================
+        # CreditAnalysisCompleted v1 → v2
+        # Add explanation field
+        # =========================================================
+        if event_type == "CreditAnalysisCompleted" and event_version == 1:
+            payload.setdefault(
+                "explanation",
+                f"Auto-generated explanation for confidence={payload.get('confidence')}",
+            )
+            return payload, 2, metadata
+
+        # =========================================================
+        # LoanApplicationSubmitted v1 → v2
+        # Add submission_channel
+        # =========================================================
+        if event_type == "LoanApplicationSubmitted" and event_version == 1:
+            inferred_channel = metadata.get("channel") or "unknown"
+            payload.setdefault("submission_channel", inferred_channel)
+            return payload, 2, metadata
+
+        # =========================================================
+        # Generic fallback (future-proof)
+        # =========================================================
+        return payload, event_version, metadata
